@@ -51,22 +51,29 @@ sub to_integer {
 
 # Start nmbstatus in background
 # @return true on success
-BEGIN{$TYPEINFO{Start}=["function","boolean"]}
+BEGIN{$TYPEINFO{Start}=["function","boolean","string"]}
 sub Start {
-    my ($self) = @_;
+    my ($self, $workgroup) = @_;
 
     if (!PackageSystem->Installed("samba-client")) {
 	y2error("package samba-client not installed");
 	return FALSE;
     }
 
+    if (length($workgroup) <= 0) {
+        y2error("nmbstatus require workgroup argmuent");
+        return FALSE;
+    }
+
     # start nmbstatus
     my $out = SCR->Execute(".target.bash_output", "/usr/bin/id --user");
-    my $cmd	= NMBSTATUS_EXE;
+    my @cmd;
+    push(@cmd, NMBSTATUS_EXE);
+    push(@cmd, $workgroup);
     if ($out && $out->{exit} == 0 && $out->{stdout} == 0) {
-	$cmd	= "su nobody -c " . NMBSTATUS_EXE;
+        unshift(@cmd, "su nobody -c");
     }
-    $process_id	= SCR->Execute (".process.start_shell", $cmd, {});
+    $process_id        = SCR->Execute (".process.start_shell", join(' ', @cmd), {});
     my $status	= SCR->Read (".process.status", to_integer ($process_id));
     $Nmbstatus_running	= ((!defined $status) || $status eq 0);
     if(!$Nmbstatus_running) {
@@ -117,16 +124,10 @@ sub checkNmbstatus {
 	$Nmbstatus_running = 0;
 	%Nmbstatus_output = ();
 	
-	my $current_group = "";
-	my @output	= split (/\n/,$std_out);
+    my @output = split (/\n/,$std_out);
 	foreach (@output) {
 	    next unless /^([^\t]+)\t(.+)$/;
-	    if ($1 eq "WORKGROUP") {
-		$current_group = uc $2;
-		$Nmbstatus_output{$current_group} = {};
-	    } else {
-		$Nmbstatus_output{$current_group}{uc $1} = uc $2;
-	    }
+        $Nmbstatus_output{uc $1} = uc $2;
 	}
     }
 }
@@ -139,21 +140,26 @@ sub Available {
 }
 
 
-# Check if a given workgroup is a domain or not. Tests presence of PDC or BDC in the workgroup.
+# Check if a given workgroup is a domain or not.
+# Tests presence of PDC or BDC in the workgroup.
+# TODO What about AD DC?
 #
 # @param workgroup	the name of a workgroup to be tested
 # @return boolean	true if the workgroup is a domain
 BEGIN{$TYPEINFO{IsDomain}=["function","boolean","string"]}
 sub IsDomain {
     my ($self, $workgroup) = @_;
-    
+
+    # Start nmbstatus for the specified domain
+    $self->Start($workgroup);
+
     # ensure the data are up-to-date
     checkNmbstatus();
 
     if (!$self->Available ()) {
 	y2milestone ("nmbstatus not available, doing other tests...");
 	my $out	= SCR->Execute(".target.bash_output","nmblookup $workgroup#1c");
-	my $nmblookup_test	= 0;
+	my $nmblookup_test = 0;
 	foreach my $line (split (/\n/,$out->{"stdout"} || "")) {
 	    next if ($line =~ m/querying/);
 	    next if ($line =~ m/failed to find/);
@@ -165,13 +171,12 @@ sub IsDomain {
 	# assume domain if nmblookup returned something reasonable (#251909)
 	return TRUE if $nmblookup_test;
     }
-    return FALSE unless $Nmbstatus_output{uc $workgroup};
-    
+
     # if there is PDC, return success
-    return TRUE if $Nmbstatus_output{uc $workgroup}{PDC};
-    
+    return TRUE if $Nmbstatus_output{PDC};
+
     # if PDC not found, try BDC
-    return TRUE if $Nmbstatus_output{uc $workgroup}{BDC};
+    return TRUE if $Nmbstatus_output{BDC};
 
     # a different error happened
     return FALSE;
@@ -184,15 +189,16 @@ sub IsDomain {
 BEGIN{$TYPEINFO{HasPDC}=["function","boolean","string"]}
 sub HasPDC {
     my ($self, $workgroup) = @_;
-    
+
+    # Start nmbstatus for the specified domain
+    $self->Start($workgroup);
+
     # ensure the data are up-to-date
     checkNmbstatus();
 
-    return FALSE unless $Nmbstatus_output{uc $workgroup};
-    
     # if there is PDC, return success
-    return TRUE if $Nmbstatus_output{uc $workgroup}{PDC};
-    
+    return TRUE if $Nmbstatus_output{PDC};
+
     # a different error happened
     return FALSE;
 }
@@ -204,15 +210,16 @@ sub HasPDC {
 BEGIN{$TYPEINFO{HasBDC}=["function","boolean","string"]}
 sub HasBDC {
     my ($self, $workgroup) = @_;
-    
+
+    # Start nmbstatus for the specified domain
+    $self->Start($workgroup);
+
     # ensure the data are up-to-date
     checkNmbstatus();
 
-    return FALSE unless $Nmbstatus_output{uc $workgroup};
-    
     # if there is BDC, return success
-    return TRUE if $Nmbstatus_output{uc $workgroup}{BDC};
-    
+    return TRUE if $Nmbstatus_output{BDC};
+
     # a different error happened
     return FALSE;
 }
